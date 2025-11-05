@@ -30,7 +30,7 @@ export const verifyAppleToken = async (identityToken) => {
       throw new Error('Invalid token format');
     }
 
-    console.log('Expected audience:', process.env.APPLE_CLIENT_ID || 'com.reddog.chefai');
+    console.log('Expected audience:', process.env.APPLE_CLIENT_ID);
     console.log('Token payload audience:', decoded.payload.aud);
 
     // Get the public key from Apple
