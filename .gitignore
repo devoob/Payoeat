@@ -1,0 +1,49 @@
+# Node modules
+node_modules/
+
+# macOS system files
+.DS_Store
+
+# Expo & React Native
+.expo/
+.expo-shared/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+expo-debug.log
+
+# Environment variables
+.env
+.env.*
+
+# Metro cache
+metro-cache/
+.cache/
+
+# VS Code settings (optional)
+.vscode/
+
+# Build directories
+dist/
+build/
+
+# Android/Gradle (if later ejected)
+android/
+*.apk
+*.aar
+*.iml
+*.keystore
+
+# iOS/Xcode (if later ejected)
+ios/
+*.xcworkspace
+*.xcodeproj
+*.xcuserdata
+Pods/
+Podfile.lock
+DerivedData/
+
+# Watchman (if used)
+.watchmanconfig

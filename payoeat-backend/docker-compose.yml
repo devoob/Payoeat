@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "3001:3001"           # backend runs on 3001 inside container
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PORT=3001
+      - JWT_SECRET=c9f0f895fb98ab9159f51fd0297e236d5a7f5f40a5f32b8f7f8d3328a6e2b2b8
+      - MONGO_URI=mongodb://localhost:27017/trollfaceapp
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:latest
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
