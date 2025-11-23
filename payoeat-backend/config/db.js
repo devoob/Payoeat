@@ -1,15 +1,13 @@
-// backend/config/db.js
-import mongoose from 'mongoose';
-const MongoURI = process.env.MONGODB_URI;
+// db.js
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
-const connectDB = async () => {
-  try {
-    await mongoose.connect(MongoURI);
-    console.log('MongoDB connected');
-  } catch (error) {
-    console.error('MongoDB connection failed:', error.message);
-    process.exit(1);
+const client = new DynamoDBClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.DYNAMODB_ACCESS_KEY,
+    secretAccessKey: process.env.DYNAMODB_SECRET,
   }
-};
+});
 
-export default connectDB;
+export const db = DynamoDBDocumentClient.from(client);

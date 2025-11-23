@@ -1,7 +1,6 @@
 import './loadEnv.js';
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import connectDB from './config/db.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import loggerMiddleware from './middlewares/logger.middleware.js';
@@ -10,15 +9,9 @@ import { globalRateLimit, authRateLimit, openaiRateLimit, uploadRateLimit } from
 // Routes
 import authRouter from './routes/auth.routes.js';
 import openaiRoutes from './routes/openai.routes.js';
-import mealHistoryRoutes from './routes/mealHistory.routes.js';
-import mealPreferencesRoutes from './routes/mealPreferences.routes.js';
-import physicalProfileRoutes from './routes/physicalProfile.routes.js';
-import workoutRoutes from './routes/workout.routes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-
-connectDB();
 
 // Security headers
 app.use(helmet({
@@ -49,10 +42,6 @@ app.use(cors({
 
 app.use('/api/auth', authRateLimit, authRouter);
 app.use('/api/openai', openaiRateLimit, uploadRateLimit, openaiRoutes);
-app.use('/api/meals', mealHistoryRoutes);
-app.use('/api/meal-preferences', mealPreferencesRoutes);
-app.use('/api/physical-profile', physicalProfileRoutes);
-app.use('/api/workouts', workoutRoutes);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://localhost:${PORT}`);

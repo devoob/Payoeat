@@ -1,26 +1,109 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import { v4 as uuidv4 } from 'uuid';
+import { PutCommand, GetCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { db } from '../config/db.js';
 import { verifyAppleToken } from '../utils/appleAuth.js';
+
+const TABLE_NAME = process.env.DYNAMO_TABLE;
+
+// Helper function to get user by email
+const getUserByEmail = async (email) => {
+  const params = {
+    TableName: TABLE_NAME,
+    IndexName: 'EmailIndex', // You'll need to create this GSI
+    KeyConditionExpression: 'email = :email',
+    ExpressionAttributeValues: {
+      ':email': email.toLowerCase(),
+    },
+  };
+
+  try {
+    const result = await db.send(new QueryCommand(params));
+    return result.Items && result.Items.length > 0 ? result.Items[0] : null;
+  } catch (err) {
+    console.error('Error querying user by email:', err);
+    throw err;
+  }
+};
+
+// Helper function to get user by Apple ID
+const getUserByAppleId = async (appleId) => {
+  const params = {
+    TableName: TABLE_NAME,
+    IndexName: 'AppleIdIndex', // You'll need to create this GSI
+    KeyConditionExpression: 'appleId = :appleId',
+    ExpressionAttributeValues: {
+      ':appleId': appleId,
+    },
+  };
+
+  try {
+    const result = await db.send(new QueryCommand(params));
+    return result.Items && result.Items.length > 0 ? result.Items[0] : null;
+  } catch (err) {
+    console.error('Error querying user by appleId:', err);
+    throw err;
+  }
+};
+
+// Helper function to get user by userId
+const getUserById = async (userId) => {
+  const params = {
+    TableName: TABLE_NAME,
+    Key: {
+      PK: `USER#${userId}`,
+      SK: 'PROFILE',
+    },
+  };
+
+  try {
+    const result = await db.send(new GetCommand(params));
+    return result.Item || null;
+  } catch (err) {
+    console.error('Error getting user by ID:', err);
+    throw err;
+  }
+};
 
 // Register
 const register = async (req, res) => {
   const { email, password } = req.body;
   try {
-    const userExists = await User.findOne({ email });
+    const userExists = await getUserByEmail(email);
     if (userExists) return res.status(400).json({ msg: 'User already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, password: hashedPassword });
+    const userId = uuidv4();
+    const now = new Date().toISOString();
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const user = {
+      PK: `USER#${userId}`,
+      SK: 'PROFILE',
+      userId,
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      authProvider: 'local',
+      totalApiUsagePrice: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
 
-    const userObj = user.toObject();
-    delete userObj.password;
+    await db.send(new PutCommand({
+      TableName: TABLE_NAME,
+      Item: user,
+    }));
+
+    const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+    const userResponse = { ...user };
+    delete userResponse.password;
+    delete userResponse.PK;
+    delete userResponse.SK;
 
     return res.status(200).json({
-      user: userObj,
-      token, // 👈 Token is sent here
+      user: userResponse,
+      token,
     });
   } catch (err) {
     console.error(err);
@@ -32,20 +115,22 @@ const register = async (req, res) => {
 const login = async (req, res) => {
   const { email, password } = req.body;
   try {
-    const user = await User.findOne({ email });
+    const user = await getUserByEmail(email);
     if (!user) return res.status(400).json({ msg: 'Invalid credentials' });
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: user.userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-    const userObj = user.toObject();
-    delete userObj.password;
+    const userResponse = { ...user };
+    delete userResponse.password;
+    delete userResponse.PK;
+    delete userResponse.SK;
 
     return res.status(200).json({
-      user: userObj,
-      token: token, // 👈 Token is sent here
+      user: userResponse,
+      token,
     });
   } catch (err) {
     console.error(err);
@@ -55,7 +140,6 @@ const login = async (req, res) => {
 
 // Logout (Client should just delete token locally)
 const logout = (req, res) => {
-  // Nothing to do on the server unless you're using a token blacklist
   console.log('User logged out');
   return res.status(200).json({ msg: 'Logged out successfully' });
 };
@@ -63,9 +147,15 @@ const logout = (req, res) => {
 // Get user info (req.user must be set by auth middleware)
 const getUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const user = await getUserById(req.user.id);
     if (!user) return res.status(404).json({ msg: 'User not found' });
-    return res.status(200).json(user);
+
+    const userResponse = { ...user };
+    delete userResponse.password;
+    delete userResponse.PK;
+    delete userResponse.SK;
+
+    return res.status(200).json(userResponse);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ msg: 'Server error from getUser' });
@@ -75,14 +165,14 @@ const getUser = async (req, res) => {
 // Apple Login
 const appleLogin = async (req, res) => {
   const { identityToken, email, fullName } = req.body;
-  
+
   try {
-    console.log('Apple login data received:', { 
-      hasIdentityToken: !!identityToken, 
-      email, 
-      fullName 
+    console.log('Apple login data received:', {
+      hasIdentityToken: !!identityToken,
+      email,
+      fullName
     });
-    
+
     if (!identityToken) {
       return res.status(400).json({ msg: 'Identity token is required' });
     }
@@ -92,41 +182,64 @@ const appleLogin = async (req, res) => {
     const appleId = decoded.sub;
 
     // Check if user exists with Apple ID
-    let user = await User.findOne({ appleId });
+    let user = await getUserByAppleId(appleId);
 
     if (user) {
       // User exists, log them in
       console.log('Existing Apple user found, logging in');
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-      
-      const userObj = user.toObject();
-      delete userObj.password;
-      
+      const token = jwt.sign({ id: user.userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+      const userResponse = { ...user };
+      delete userResponse.password;
+      delete userResponse.PK;
+      delete userResponse.SK;
+
       return res.status(200).json({
-        user: userObj,
+        user: userResponse,
         token,
       });
     } else {
       // Check if user exists with the same email
-      const existingUser = await User.findOne({ email });
-      
+      const existingUser = email ? await getUserByEmail(email) : null;
+
       if (existingUser) {
         console.log('Existing email user found, auto-linking Apple ID');
         // Link Apple ID to existing account
+        const now = new Date().toISOString();
+        const fullNameStr = fullName ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim() : '';
+
+        await db.send(new UpdateCommand({
+          TableName: TABLE_NAME,
+          Key: {
+            PK: existingUser.PK,
+            SK: existingUser.SK,
+          },
+          UpdateExpression: 'SET appleId = :appleId, authProvider = :authProvider, updatedAt = :updatedAt' +
+            (fullNameStr && !existingUser.fullName ? ', fullName = :fullName' : ''),
+          ExpressionAttributeValues: {
+            ':appleId': appleId,
+            ':authProvider': 'apple',
+            ':updatedAt': now,
+            ...(fullNameStr && !existingUser.fullName ? { ':fullName': fullNameStr } : {}),
+          },
+        }));
+
         existingUser.appleId = appleId;
         existingUser.authProvider = 'apple';
-        if (fullName && !existingUser.fullName) {
-          existingUser.fullName = fullName ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim() : '';
+        existingUser.updatedAt = now;
+        if (fullNameStr && !existingUser.fullName) {
+          existingUser.fullName = fullNameStr;
         }
-        await existingUser.save();
-        
-        const token = jwt.sign({ id: existingUser._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        
-        const userObj = existingUser.toObject();
-        delete userObj.password;
-        
+
+        const token = jwt.sign({ id: existingUser.userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        const userResponse = { ...existingUser };
+        delete userResponse.password;
+        delete userResponse.PK;
+        delete userResponse.SK;
+
         return res.status(200).json({
-          user: userObj,
+          user: userResponse,
           token,
         });
       } else {
@@ -134,22 +247,37 @@ const appleLogin = async (req, res) => {
         // Create new user
         // Use provided email or generate a placeholder for private relay users
         const userEmail = email || `apple.${appleId.substring(0, 8)}@privaterelay.local`;
-        
-        const newUser = await User.create({
-          email: userEmail,
+        const userId = uuidv4();
+        const now = new Date().toISOString();
+
+        const newUser = {
+          PK: `USER#${userId}`,
+          SK: 'PROFILE',
+          userId,
+          email: userEmail.toLowerCase(),
           appleId,
           fullName: fullName ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim() : '',
           authProvider: 'apple',
-        });
-        
-        const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        
-        const userObj = newUser.toObject();
-        delete userObj.password;
-        
+          totalApiUsagePrice: 0,
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        await db.send(new PutCommand({
+          TableName: TABLE_NAME,
+          Item: newUser,
+        }));
+
+        const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        const userResponse = { ...newUser };
+        delete userResponse.password;
+        delete userResponse.PK;
+        delete userResponse.SK;
+
         console.log('Sending response with needsAccountLinking: true');
         return res.status(200).json({
-          user: userObj,
+          user: userResponse,
           token,
           needsAccountLinking: true,
         });
@@ -164,7 +292,7 @@ const appleLogin = async (req, res) => {
 // Link Apple account to existing account
 const linkAccount = async (req, res) => {
   const { identityToken, email, password } = req.body;
-  
+
   try {
     if (!identityToken || !email || !password) {
       return res.status(400).json({ msg: 'Identity token, email, and password are required' });
@@ -175,13 +303,13 @@ const linkAccount = async (req, res) => {
     const appleId = decoded.sub;
 
     // Find the temporary Apple user
-    const appleUser = await User.findOne({ appleId });
+    const appleUser = await getUserByAppleId(appleId);
     if (!appleUser) {
       return res.status(400).json({ msg: 'Apple account not found' });
     }
 
     // Verify existing account credentials
-    const existingUser = await User.findOne({ email });
+    const existingUser = await getUserByEmail(email);
     if (!existingUser) {
       return res.status(400).json({ msg: 'No account found with this email' });
     }
@@ -203,21 +331,44 @@ const linkAccount = async (req, res) => {
     }
 
     // Delete the temporary Apple-only account first (to free up the appleId)
-    await User.findByIdAndDelete(appleUser._id);
+    await db.send(new DeleteCommand({
+      TableName: TABLE_NAME,
+      Key: {
+        PK: appleUser.PK,
+        SK: appleUser.SK,
+      },
+    }));
 
     // Link Apple ID to existing account
+    const now = new Date().toISOString();
+    await db.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: {
+        PK: existingUser.PK,
+        SK: existingUser.SK,
+      },
+      UpdateExpression: 'SET appleId = :appleId, authProvider = :authProvider, updatedAt = :updatedAt',
+      ExpressionAttributeValues: {
+        ':appleId': appleId,
+        ':authProvider': 'apple',
+        ':updatedAt': now,
+      },
+    }));
+
     existingUser.appleId = appleId;
     existingUser.authProvider = 'apple';
-    await existingUser.save();
+    existingUser.updatedAt = now;
 
     // Generate new token for the linked account
-    const token = jwt.sign({ id: existingUser._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: existingUser.userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-    const userObj = existingUser.toObject();
-    delete userObj.password;
+    const userResponse = { ...existingUser };
+    delete userResponse.password;
+    delete userResponse.PK;
+    delete userResponse.SK;
 
     return res.status(200).json({
-      user: userObj,
+      user: userResponse,
       token,
       message: 'Account linked successfully',
     });
@@ -230,13 +381,14 @@ const linkAccount = async (req, res) => {
 // Get user's API usage statistics
 const getApiUsage = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('email totalApiUsagePrice createdAt');
+    const user = await getUserById(req.user.id);
     if (!user) {
       return res.status(404).json({ msg: 'User not found' });
     }
 
     // Calculate days since user registration
-    const daysSinceRegistration = Math.ceil((Date.now() - user.createdAt) / (1000 * 60 * 60 * 24));
+    const createdAt = new Date(user.createdAt);
+    const daysSinceRegistration = Math.ceil((Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
     const averageDailyCost = user.totalApiUsagePrice / Math.max(daysSinceRegistration, 1);
 
     return res.status(200).json({
@@ -246,7 +398,7 @@ const getApiUsage = async (req, res) => {
       daysSinceRegistration,
       averageDailyCost: averageDailyCost.toFixed(5),
       formattedAverageDailyCost: `$${averageDailyCost.toFixed(5)}`,
-      registrationDate: user.createdAt.toISOString().split('T')[0],
+      registrationDate: user.createdAt.split('T')[0],
     });
   } catch (err) {
     console.error('Get API usage error:', err);
@@ -254,4 +406,61 @@ const getApiUsage = async (req, res) => {
   }
 };
 
-export { register, login, logout, getUser, appleLogin, linkAccount, getApiUsage };
+// Update user (new function for updating user profile)
+const updateUser = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { fullName, email } = req.body;
+
+    const user = await getUserById(userId);
+    if (!user) {
+      return res.status(404).json({ msg: 'User not found' });
+    }
+
+    // Check if email is being changed and if it's already taken
+    if (email && email.toLowerCase() !== user.email) {
+      const existingUser = await getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ msg: 'Email already in use' });
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updateExpressionParts = ['updatedAt = :updatedAt'];
+    const expressionAttributeValues = { ':updatedAt': now };
+
+    if (fullName !== undefined) {
+      updateExpressionParts.push('fullName = :fullName');
+      expressionAttributeValues[':fullName'] = fullName;
+    }
+
+    if (email && email.toLowerCase() !== user.email) {
+      updateExpressionParts.push('email = :email');
+      expressionAttributeValues[':email'] = email.toLowerCase();
+    }
+
+    await db.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: {
+        PK: `USER#${userId}`,
+        SK: 'PROFILE',
+      },
+      UpdateExpression: 'SET ' + updateExpressionParts.join(', '),
+      ExpressionAttributeValues: expressionAttributeValues,
+    }));
+
+    // Fetch updated user
+    const updatedUser = await getUserById(userId);
+    const userResponse = { ...updatedUser };
+    delete userResponse.password;
+    delete userResponse.PK;
+    delete userResponse.SK;
+
+    return res.status(200).json(userResponse);
+  } catch (err) {
+    console.error('Update user error:', err);
+    return res.status(500).json({ msg: 'Server error updating user' });
+  }
+};
+
+export { register, login, logout, getUser, appleLogin, linkAccount, getApiUsage, updateUser };
